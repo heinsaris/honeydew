@@ -13,9 +13,7 @@ defmodule Honeydew.Queue.Mnesia.WrappedJob do
 
   @job_filter struct(Job, job_filter_map)
 
-  defstruct [:run_at,
-             :id,
-             :job]
+  defstruct [:run_at, :id, :job]
 
   def record_name, do: @record_name
   def record_fields, do: @record_fields
@@ -26,20 +24,14 @@ defmodule Honeydew.Queue.Mnesia.WrappedJob do
 
     job = %{job | private: id}
 
-    %__MODULE__{run_at: run_at,
-                id: id,
-                job: job}
+    %__MODULE__{id: id, job: job, run_at: run_at}
   end
 
   def from_record({@record_name, {run_at, id}, job}) do
-    %__MODULE__{run_at: run_at,
-                id: id,
-                job: job}
+    %__MODULE__{run_at: run_at, id: id, job: job}
   end
 
-  def to_record(%__MODULE__{run_at: run_at,
-                            id: id,
-                            job: job}) do
+  def to_record(%__MODULE__{run_at: run_at, id: id, job: job}) do
     {@record_name, key(run_at, id), job}
   end
 
@@ -53,6 +45,10 @@ defmodule Honeydew.Queue.Mnesia.WrappedJob do
 
   def id_from_key({_run_at, id}) do
     id
+  end
+
+  def set_run_at_to_now(%__MODULE__{} = wrapped_job) do
+    %__MODULE__{wrapped_job | run_at: now()}
   end
 
   def id_pattern(id) do
@@ -84,11 +80,13 @@ defmodule Honeydew.Queue.Mnesia.WrappedJob do
       }
       |> to_record
 
-    [{
-      pattern,
-      [{:"=<", :"$1", now()}],
-      [:"$_"]
-    }]
+    [
+      {
+        pattern,
+        [{:"=<", :"$1", now()}],
+        [:"$_"]
+      }
+    ]
   end
 
   defp now do

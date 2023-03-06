@@ -22,9 +22,7 @@ defmodule Honeydew.Queue.Mnesia do
   defmodule PState do
     @moduledoc false
 
-    defstruct [:table,
-               :in_progress_table,
-               :access_context]
+    defstruct [:table, :in_progress_table, :access_context]
   end
 
   @poll_interval 1_000
@@ -34,13 +32,17 @@ defmodule Honeydew.Queue.Mnesia do
     nodes_list = nodes_list(opts)
 
     if Enum.empty?(nodes_list) do
-      raise ArgumentError, "You must provide either :ram_copies, :disc_copies or :disc_only_copies as to #{__MODULE__}, for instance `[disc_copies: [node()]]`."
+      raise ArgumentError,
+            "You must provide either :ram_copies, :disc_copies or :disc_only_copies as to #{__MODULE__}, for instance `[disc_copies: [node()]]`."
     end
 
     Enum.each(nodes_list, fn
       node when not is_atom(node) ->
-        raise ArgumentError, "You provided node name `#{inspect node}` to the #{__MODULE__} queue, node names must be atoms."
-      _ -> :ok
+        raise ArgumentError,
+              "You provided node name `#{inspect(node)}` to the #{__MODULE__} queue, node names must be atoms."
+
+      _ ->
+        :ok
     end)
 
     :ok
@@ -61,17 +63,18 @@ defmodule Honeydew.Queue.Mnesia do
     :rpc.multicall(nodes, :mnesia, :start, [])
 
     generic_table_def =
-      Keyword.merge(table_opts, [
-            attributes: WrappedJob.record_fields(),
-            record_name: WrappedJob.record_name()
-          ])
+      Keyword.merge(table_opts,
+        attributes: WrappedJob.record_fields(),
+        record_name: WrappedJob.record_name()
+      )
 
     # inspect/1 here becase queue_name can be of the form {:global, poolname}
-    table = ["honeydew", inspect(queue_name)] |> Enum.join("_") |> String.to_atom
-    in_progress_table = ["honeydew", inspect(queue_name), "in_progress"] |> Enum.join("_") |> String.to_atom
+    table = table_name(queue_name)
 
-    tables = %{table => [type: :ordered_set],
-               in_progress_table => [type: :set]}
+    in_progress_table =
+      ["honeydew", inspect(queue_name), "in_progress"] |> Enum.join("_") |> String.to_atom()
+
+    tables = %{table => [type: :ordered_set], in_progress_table => [type: :set]}
 
     Enum.each(tables, fn {name, opts} ->
       table_definition = Keyword.merge(generic_table_def, opts)
@@ -90,11 +93,13 @@ defmodule Honeydew.Queue.Mnesia do
       |> Map.keys()
       |> :mnesia.wait_for_tables(15_000)
 
-    state = %PState{table: table,
-                    in_progress_table: in_progress_table,
-                    access_context: access_context(table_opts)}
+    state = %PState{
+      table: table,
+      in_progress_table: in_progress_table,
+      access_context: access_context(table_opts)
+    }
 
-    :ok = reset_after_crash(state)
+    :ok = reset_after_shutdown(state)
 
     time_warp_mode_warning()
     poll()
@@ -122,14 +127,14 @@ defmodule Honeydew.Queue.Mnesia do
       table
       |> :mnesia.select(WrappedJob.reserve_match_spec(), 1, :read)
       |> case do
-           :"$end_of_table" ->
-             {:empty, state}
+        :"$end_of_table" ->
+          {:empty, state}
 
-           {[wrapped_job_record], _cont} ->
-             :ok = move_to_in_progress_table(wrapped_job_record, state)
-             %WrappedJob{job: job} = WrappedJob.from_record(wrapped_job_record)
-             {job, state}
-         end
+        {[wrapped_job_record], _cont} ->
+          :ok = move_to_in_progress_table(wrapped_job_record, state)
+          %WrappedJob{job: job} = WrappedJob.from_record(wrapped_job_record)
+          {job, state}
+      end
     end)
   end
 
@@ -138,7 +143,10 @@ defmodule Honeydew.Queue.Mnesia do
   #
 
   @impl true
-  def ack(%Job{private: id}, %PState{in_progress_table: in_progress_table, access_context: access_context} = state) do
+  def ack(
+        %Job{private: id},
+        %PState{in_progress_table: in_progress_table, access_context: access_context} = state
+      ) do
     pattern = WrappedJob.id_pattern(id)
 
     :mnesia.activity(access_context, fn ->
@@ -150,7 +158,10 @@ defmodule Honeydew.Queue.Mnesia do
   end
 
   @impl true
-  def nack(%Job{private: id, failure_private: failure_private, delay_secs: delay_secs}, %PState{} = state) do
+  def nack(
+        %Job{private: id, failure_private: failure_private, delay_secs: delay_secs},
+        %PState{} = state
+      ) do
     move_to_pending_table(id, %{failure_private: failure_private, delay_secs: delay_secs}, state)
 
     state
@@ -192,21 +203,32 @@ defmodule Honeydew.Queue.Mnesia do
   @impl true
   def filter(%PState{table: table, access_context: access_context}, function) do
     :mnesia.activity(access_context, fn ->
-      :mnesia.foldl(fn wrapped_job_record, list ->
-        %WrappedJob{job: job} = WrappedJob.from_record(wrapped_job_record)
+      :mnesia.foldl(
+        fn wrapped_job_record, list ->
+          %WrappedJob{job: job} = WrappedJob.from_record(wrapped_job_record)
 
-        job
-        |> function.()
-        |> case do
-             true -> [job | list]
-             false -> list
-           end
-      end, [], table)
+          job
+          |> function.()
+          |> case do
+            true -> [job | list]
+            false -> list
+          end
+        end,
+        [],
+        table
+      )
     end)
   end
 
   @impl true
-  def cancel(%Job{private: id}, %PState{table: table, in_progress_table: in_progress_table, access_context: access_context} = state) do
+  def cancel(
+        %Job{private: id},
+        %PState{
+          table: table,
+          in_progress_table: in_progress_table,
+          access_context: access_context
+        } = state
+      ) do
     reply =
       :mnesia.activity(access_context, fn ->
         pattern = WrappedJob.id_pattern(id)
@@ -214,64 +236,102 @@ defmodule Honeydew.Queue.Mnesia do
         table
         |> :mnesia.match_object(pattern, :read)
         |> case do
-             [wrapped_job] ->
-               :ok = :mnesia.delete_object(table, wrapped_job, :write)
+          [wrapped_job] ->
+            :ok = :mnesia.delete_object(table, wrapped_job, :write)
 
-             [] ->
-               in_progress_table
-               |> :mnesia.match_object(pattern, :read)
-               |> case do
-                    [] ->
-                      {:error, :not_found}
-                    [_wrapped_job] ->
-                      {:error, :in_progress}
-                  end
-           end
+          [] ->
+            in_progress_table
+            |> :mnesia.match_object(pattern, :read)
+            |> case do
+              [] ->
+                {:error, :not_found}
+
+              [_wrapped_job] ->
+                {:error, :in_progress}
+            end
+        end
       end)
 
     {reply, state}
   end
 
-  defp reset_after_crash(%PState{in_progress_table: in_progress_table} = state) do
-    in_progress_table
-    |> :mnesia.dirty_first()
-    |> case do
-         :"$end_of_table" ->
-           :ok
+  defp reset_after_shutdown(state) do
+    reset_all_in_progress_jobs(state)
+    reset_all_pending_jobs(state)
 
-         key ->
-           key
-           |> WrappedJob.id_from_key
-           |> move_to_pending_table(%{}, state)
-
-           reset_after_crash(state)
-       end
     :ok
   end
 
-  defp move_to_in_progress_table(wrapped_job_record, %PState{table: table, in_progress_table: in_progress_table, access_context: access_context}) do
+  defp reset_all_in_progress_jobs(%PState{in_progress_table: in_progress_table} = state) do
+    in_progress_table
+    |> :mnesia.dirty_first()
+    |> case do
+      :"$end_of_table" ->
+        :ok
+
+      key ->
+        key
+        |> WrappedJob.id_from_key()
+        |> move_to_pending_table(%{}, state)
+
+        reset_all_in_progress_jobs(state)
+    end
+
+    :ok
+  end
+
+  defp reset_all_pending_jobs(%PState{access_context: access_context, table: table}) do
+    :mnesia.activity(access_context, fn ->
+      :mnesia.foldl(
+        fn wrapped_job_record, _ ->
+          new_wrapped_job_record =
+            wrapped_job_record
+            |> WrappedJob.from_record()
+            |> WrappedJob.set_run_at_to_now()
+            |> WrappedJob.to_record()
+
+          :ok = :mnesia.delete_object(table, wrapped_job_record, :write)
+          :ok = :mnesia.write(table, new_wrapped_job_record, :write)
+        end,
+        [],
+        table
+      )
+    end)
+
+    :ok
+  end
+
+  defp move_to_in_progress_table(wrapped_job_record, %PState{
+         table: table,
+         in_progress_table: in_progress_table,
+         access_context: access_context
+       }) do
     :mnesia.activity(access_context, fn ->
       :ok = :mnesia.write(in_progress_table, wrapped_job_record, :write)
       :ok = :mnesia.delete({table, WrappedJob.key(wrapped_job_record)})
     end)
   end
 
-  defp move_to_pending_table(id, updates, %PState{table: table, in_progress_table: in_progress_table, access_context: access_context}) do
+  defp move_to_pending_table(id, updates, %PState{
+         table: table,
+         in_progress_table: in_progress_table,
+         access_context: access_context
+       }) do
     pattern = WrappedJob.id_pattern(id)
 
     :mnesia.activity(access_context, fn ->
       wrapped_job_record =
         in_progress_table
         |> :mnesia.match_object(pattern, :read)
-        |> List.first
+        |> List.first()
 
       %WrappedJob{job: job} = WrappedJob.from_record(wrapped_job_record)
 
       updated_wrapped_job_record =
         job
         |> struct(updates)
-        |> WrappedJob.new
-        |> WrappedJob.to_record
+        |> WrappedJob.new()
+        |> WrappedJob.to_record()
 
       :ok = :mnesia.write(table, updated_wrapped_job_record, :write)
       :ok = :mnesia.delete_object(in_progress_table, wrapped_job_record, :write)
@@ -305,8 +365,8 @@ defmodule Honeydew.Queue.Mnesia do
   defp nodes_list(opts) do
     opts
     |> nodes
-    |> Map.values
-    |> List.flatten
+    |> Map.values()
+    |> List.flatten()
   end
 
   defp on_disk?(opts) do
@@ -321,13 +381,21 @@ defmodule Honeydew.Queue.Mnesia do
     {:noreply, Queue.dispatch(queue_state)}
   end
 
+  def table_name(queue_name) do
+    ["honeydew", inspect(queue_name)]
+    |> Enum.join("_")
+    |> String.to_atom()
+  end
+
   defp poll do
     {:ok, _} = :timer.send_after(@poll_interval, :__poll__)
   end
 
   defp time_warp_mode_warning do
     if :erlang.system_info(:time_warp_mode) != :multi_time_warp do
-      Logger.warn "[Honeydew] It's recommended to use the Mnesia queue with the 'multi_time_warp' time correction mode to minimize montonic clock freezes, see http://erlang.org/doc/apps/erts/time_correction.html#multi-time-warp-mode."
+      Logger.warn(
+        "[Honeydew] It's recommended to use the Mnesia queue with the 'multi_time_warp' time correction mode to minimize montonic clock freezes, see http://erlang.org/doc/apps/erts/time_correction.html#multi-time-warp-mode."
+      )
     end
   end
 end
